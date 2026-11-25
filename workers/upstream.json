@@ -1,0 +1,12 @@
+{
+  "checker": {
+    "commit": "2f31cf9a242444eb22905d888d4d8871b0625b3a",
+    "upstream_sha256": "315de23023d4bf39e6cc207c6f24fec90b31f106a57bda8a0368c6c6e9f8e89c",
+    "patched_sha256": "99853e941388970b0ae1e86186fb841d333def4b2e101b773fbb4265d8a6c60c"
+  },
+  "edgetunnel": {
+    "commit": "5b2aaf0daf7fa1b126170877f64dd8d2e34c2746",
+    "upstream_sha256": "210b1fe4cd3e06e5982c97c3d5b536297188ce2d87ae6e0e8e95c1c605a64006",
+    "patched_sha256": "210b1fe4cd3e06e5982c97c3d5b536297188ce2d87ae6e0e8e95c1c605a64006"
+  }
+}

@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import checker from '../workers/checker.mjs';
+import edge from '../workers/edge.mjs';
+
+const secret = 'x'.repeat(40);
+const request = (path, options = {}) => new Request('https://gate.test' + path, options);
+
+test('deployed handlers reject absent credentials before opening connections', async () => {
+  assert.equal((await checker.fetch(request('/check?sstp=vpn:vpn@a.opengw.net:443'), {})).status, 401);
+  assert.equal((await edge.fetch(request('/subscription/clash'), {}, {})).status, 401);
+  assert.equal((await edge.fetch(request('/publish', {method: 'POST', body: '{}'}), {}, {})).status, 401);
+});
+
+test('checker rejects arbitrary targets even with a correct token', async () => {
+  const res = await checker.fetch(request('/check?sstp=vpn:vpn@localhost:80', {headers: {Authorization: `Bearer ${secret}`}}), {CHECK_TOKEN: secret});
+  assert.equal(res.status, 400);
+});
+
+test('edge rejects direct routes and rejects stale or too-small publications', async () => {
+  assert.equal((await edge.fetch(request('/', {method: 'POST', body: 'test'}), {}, {})).status, 400);
+  const env = {PUBLISH_TOKEN: secret, KV: {get: async () => null, put: async () => assert.fail('Must not publish invalid data')}};
+  for (const data of [{}, {generated_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60000).toISOString(), countries: {}}]) {
+    const res = await edge.fetch(request('/publish', {method: 'POST', headers: {Authorization: `Bearer ${secret}`}, body: JSON.stringify(data)}), env, {});
+    assert.equal(res.status, 422);
+  }
+});
+
+test('native subscription stays local and keeps credentials out of public status', async () => {
+  const data = {generated_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60000).toISOString(), countries: {JP: {nodes: [{host: 'a.opengw.net', port: 443, success: true, latency_ms: 50}]}}};
+  const env = {SUB_TOKEN: secret, UUID: 'uuid-test', HOST: 'gate.test', KV: {get: async () => data}};
+  const res = await edge.fetch(request('/subscription/clash', {headers: {Authorization: `Bearer ${secret}`}}), env, {});
+  const cfg = await res.json();
+  assert.equal(cfg.tun.enable, false);
+  assert.equal(cfg.proxies.length, 1);
+  assert.equal(cfg.proxies[0].uuid, env.UUID);
+  assert.match(res.headers.get('Cache-Control'), /no-store/);
+});

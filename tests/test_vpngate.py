@@ -1,7 +1,6 @@
 import base64
 
 import pytest
-
 import vpngate
 from vpngate import ConfigError, Node
 
@@ -201,14 +200,14 @@ def test_dedupe_and_prioritize():
 
 
 def test_classify_prefers_worker_flag():
-    assert vpngate.classify_network("GOOGLE LLC", False) == "residential"
+    assert vpngate.classify_network("GOOGLE LLC", False) == "datacenter"
     assert vpngate.classify_network("NTT EAST", True) == "datacenter"
     assert vpngate.classify_network("", None) == "unknown"
 
 
 def test_classify_falls_back_to_org_keywords():
     assert vpngate.classify_network("Google LLC", None) == "datacenter"
-    assert vpngate.classify_network("NTT EAST", None) == "residential"
+    assert vpngate.classify_network("NTT EAST", None) == "unknown"
     assert vpngate.classify_network(None, None) == "unknown"
 
 

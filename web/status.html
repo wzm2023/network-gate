@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VPN Gate SSTP · 备用网络状态</title>
+<style>
+body{font:16px/1.65 system-ui,sans-serif;color:#dce6ef;background:#101820;margin:0}main{max-width:1050px;margin:60px auto;padding:24px}h1{font-size:32px;margin:0}p{color:#aabac8}.cards{display:flex;gap:18px;flex-wrap:wrap;margin:28px 0}.card{padding:20px 26px;background:#1a2833;border-radius:12px;min-width:160px}.card strong{display:block;font-size:25px;color:#e8f4ff}.badge{padding:14px 18px;border-radius:8px;background:#284637}table{border-collapse:collapse;width:100%;background:#17232d}td,th{text-align:left;padding:12px;border-bottom:1px solid #2b3a46;font-size:14px}.scroll{overflow:auto}small{color:#aabac8}.bad{background:#663d2b}.foot{margin-top:24px}
+</style>
+<main><small>VPN GATE SSTP · BACKUP NETWORK</small><h1>备用网络状态</h1>
+<p>出口来自志愿者节点。此页面展示最近一次检查结果，节点可能随时变化。</p>
+<div id="state" class="badge">正在读取状态…</div>
+<div class="cards"><div class="card">合格节点<strong id="count">—</strong></div><div class="card">出口地区<strong id="countries">—</strong></div><div class="card">检查耗时<strong id="duration">—</strong></div></div>
+<p id="time"></p><div class="scroll"><table><thead><tr><th>地区</th><th>出口 IP</th><th>网络属性</th><th>检查耗时</th><th>已知标记</th></tr></thead><tbody id="rows"></tbody></table></div>
+<p class="foot">检查耗时包括建立隧道和 IP 查询，不代表下载速度。ISP 估计不等于独享家庭宽带；缺失的查询信息会显示为未知。</p></main>
+<script>
+let snapshot;
+const el=id=>document.getElementById(id);
+function state(){if(!snapshot)return;const expired=Date.parse(snapshot.expires_at)<=Date.now();el('state').className='badge'+(expired?' bad':'');el('state').textContent=expired?'结果已过期，订阅服务暂停输出，请检查更新任务。':'最近检查结果有效；连接质量仍需以实际使用为准。';}
+async function load(){try{const r=await fetch('data.json?ts='+Date.now(),{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);snapshot=await r.json();el('count').textContent=snapshot.stats.success;el('countries').textContent=snapshot.stats.countries;el('duration').textContent=snapshot.duration_s+' 秒';el('time').textContent='最近更新：'+new Date(snapshot.generated_at).toLocaleString()+'　有效至：'+new Date(snapshot.expires_at).toLocaleString();el('rows').replaceChildren();for(const group of Object.values(snapshot.countries)){for(const n of group.nodes){const tr=document.createElement('tr'),flags=['is_vpn','is_proxy','is_abuser'].filter(k=>n.exit?.[k]===true).map(k=>({is_vpn:'VPN',is_proxy:'代理',is_abuser:'滥用记录'})[k]);for(const value of [group.name,n.exit?.ip||'未知',({residential:'ISP 估计',datacenter:'机房',unknown:'未知'})[n.residential]||'未知',Math.round(n.latency_ms)+' ms',flags.join(' / ')||'无已知标记']){const td=document.createElement('td');td.textContent=value;tr.append(td);}el('rows').append(tr);}}state();}catch{el('state').className='badge bad';el('state').textContent='暂时无法读取节点状态，请稍后重试。';}}
+load();setInterval(state,30000);setInterval(load,300000);
+</script></html>

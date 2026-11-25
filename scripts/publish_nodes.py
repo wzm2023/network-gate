@@ -1,0 +1,18 @@
+"""Publish only validated node data, with a separate publishing credential."""
+import json
+import os
+from pathlib import Path
+
+import requests
+
+host = os.environ['EDGE_HOST']
+token = os.environ['PUBLISH_TOKEN']
+path = Path(os.environ.get('PUBLIC_DIR', 'public')) / 'data.json'
+data = json.loads(path.read_text(encoding='utf-8'))
+response = requests.post('https://' + host + '/publish', json=data,
+                         headers={'Authorization': 'Bearer ' + token}, timeout=30)
+response.raise_for_status()
+result = response.json()
+if result.get('ok') is not True:
+    raise RuntimeError('Worker rejected node snapshot')
+print(f"Worker snapshot updated: {result['count']} nodes")

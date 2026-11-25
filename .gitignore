@@ -5,6 +5,16 @@ public/
 __pycache__/
 *.py[cod]
 .venv/
+.venv*/
+.deps/
+.private/
+.dev.vars*
+.env*
+node_modules/
+.wrangler/
+dist/
+runtime/
+*.log
 .pytest_cache/
 .ruff_cache/
 *.egg-info/

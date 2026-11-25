@@ -30,3 +30,14 @@ jobs:
 
       - name: Unit tests
         run: pytest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Worker policy and isolated client tests
+        run: node --experimental-loader ./tests/cloudflare-loader.mjs --test tests/*.test.mjs
+      - name: Worker syntax
+        run: |
+          node --check workers/checker.mjs
+          node --check workers/edge.mjs
+          node --check workers/vendor/checker.mjs
+          node --check workers/vendor/edgetunnel.mjs

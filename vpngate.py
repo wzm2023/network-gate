@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import csv
 import io
@@ -23,12 +24,12 @@ import os
 import re
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 from urllib.parse import quote, urlsplit
 
+import httpx
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -289,6 +290,12 @@ class Config:
     min_success_ratio: float
     max_residential_per_country: int
     max_datacenter_per_country: int
+    worker_token: str = ""
+    min_success_count: int = 1
+    max_latency_ms: float = 20000.0
+    result_ttl_s: int = 7200
+    exclude_abusers: bool = True
+    allowed_countries: tuple[str, ...] = ()
 
     @classmethod
     def load(cls) -> "Config":
@@ -316,13 +323,19 @@ class Config:
             http_timeout=_env_float("HTTP_TIMEOUT", 60.0, minimum=5.0),
             max_check_nodes=_env_int("MAX_CHECK_NODES", 0),
             public_dir=os.environ.get("PUBLIC_DIR", os.path.join(REPO_DIR, "public")),
-            template_html=os.path.join(REPO_DIR, "web", "index.html"),
+            template_html=os.path.join(REPO_DIR, "web", "status.html"),
             edge_hosts=tuple(edge_hosts),
             optimal_api=os.environ.get("OPTIMAL_API", DEFAULT_OPTIMAL_API),
             nodes_url=derive_nodes_url(),
             min_success_ratio=_env_float("MIN_SUCCESS_RATIO", 0.0, minimum=0.0),
             max_residential_per_country=_env_int("MAX_RESIDENTIAL_PER_COUNTRY", 20),
             max_datacenter_per_country=_env_int("MAX_DATACENTER_PER_COUNTRY", 10),
+            worker_token=os.environ.get("CHECK_TOKEN", "").strip(),
+            min_success_count=_env_int("MIN_SUCCESS_COUNT", 1, minimum=1),
+            max_latency_ms=_env_float("MAX_LATENCY_MS", 20000.0, minimum=0.0),
+            result_ttl_s=_env_int("RESULT_TTL_SECONDS", 7200, minimum=300),
+            exclude_abusers=os.environ.get("EXCLUDE_ABUSERS", "true").lower() != "false",
+            allowed_countries=tuple(x.strip().upper() for x in os.environ.get("ALLOWED_COUNTRIES", "").split(",") if x.strip()),
         )
 
 
@@ -586,13 +599,11 @@ def prioritize(nodes: list[Node]) -> list[Node]:
 def classify_network(org: str | None, is_datacenter: bool | None) -> str:
     if is_datacenter is True:
         return "datacenter"
-    if is_datacenter is False:
-        return "residential"
     upper = (org or "").upper()
     if upper:
         if any(keyword in upper for keyword in DATA_CENTER_ORG_KEYWORDS):
             return "datacenter"
-        if any(keyword in upper for keyword in RESIDENTIAL_ORG_KEYWORDS):
+        if is_datacenter is False and any(keyword in upper for keyword in RESIDENTIAL_ORG_KEYWORDS):
             return "residential"
     return "unknown"
 
@@ -606,22 +617,7 @@ def check_one(
     worker_base: str,
     timeout: float,
 ) -> dict[str, Any]:
-    result: dict[str, Any] = node.to_dict()
-    result.update(
-        {
-            "protocol": "sstp",
-            "link": f"sstp://vpn:vpn@{node.host}:{node.port}",
-            "status": "failed",
-            "success": False,
-            "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-            "exit": None,
-            "latency_ms": None,
-            "colo": None,
-            "error": None,
-            "worker_error": False,
-            "residential": "unknown",
-        }
-    )
+    result = empty_check(node)
     url = worker_base + quote(f"{node.host}:{node.port}", safe="")
     try:
         response = session.get(url, timeout=timeout)
@@ -630,38 +626,66 @@ def check_one(
             result["worker_error"] = True
             return result
 
-        payload = response.json()
-        success = bool(payload.get("success"))
-        result["success"] = success
-        result["status"] = "success" if success else "failed"
-        result["latency_ms"] = payload.get("responseTime")
-        result["colo"] = payload.get("colo")
-        result["error"] = None if success else (
-            payload.get("error") or payload.get("message") or "check failed"
-        )
-
-        exit_info = payload.get("exit") or {}
-        if success and exit_info:
-            asn = exit_info.get("asn") or {}
-            org = str(asn.get("org") or asn.get("name") or "")
-            result["exit"] = {
-                "ip": exit_info.get("ip"),
-                "country": exit_info.get("country"),
-                "country_code": exit_info.get("country_code"),
-                "city": exit_info.get("city"),
-                "continent": exit_info.get("continent"),
-                "asn": asn.get("asn"),
-                "org": org,
-                "is_datacenter": exit_info.get("is_datacenter"),
-            }
-            result["residential"] = classify_network(org, exit_info.get("is_datacenter"))
-        elif success:
-            result["residential"] = "unknown"
-        return result
+        return parse_check_payload(node, response.json())
     except Exception as exc:  # noqa: BLE001 - 单节点失败不影响整体
         result["error"] = f"{type(exc).__name__}: {exc}"
         result["worker_error"] = True
         return result
+
+
+def empty_check(node: Node, error: str | None = None) -> dict[str, Any]:
+    return {
+        **node.to_dict(), "protocol": "sstp",
+        "link": f"sstp://vpn:vpn@{node.host}:{node.port}",
+        "status": "failed", "success": False,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "exit": None, "latency_ms": None, "colo": None,
+        "error": error, "worker_error": False, "residential": "unknown",
+    }
+
+
+def parse_check_payload(node: Node, payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Worker response must be an object")
+    result = empty_check(node)
+    success = payload.get("success") is True
+    result.update(success=success, status="success" if success else "failed",
+                  latency_ms=payload.get("responseTime"), colo=payload.get("colo"),
+                  error=None if success else payload.get("error") or "check failed",
+                  lookup_source=payload.get("lookupSource", "iplocate"))
+    exit_info = payload.get("exit")
+    if success and isinstance(exit_info, dict):
+        asn = exit_info.get("asn")
+        asn = asn if isinstance(asn, dict) else {}
+        org = str(asn.get("org") or asn.get("name") or "")
+        result["exit"] = {key: exit_info.get(key) for key in
+                          ("ip", "country", "country_code", "city", "continent")}
+        for key in ("is_datacenter", "is_proxy", "is_vpn", "is_tor", "is_abuser"):
+            value = exit_info.get(key)
+            result["exit"][key] = value if type(value) is bool else None
+        result["exit"].update(asn=asn.get("asn"), org=org)
+        result["residential"] = classify_network(org, result["exit"]["is_datacenter"])
+    result["classification_note"] = "ISP estimate, not dedicated residential proof" if result["residential"] == "residential" else "database/ASN estimate"
+    return result
+
+
+def exclusion_reason(result: dict[str, Any], cfg: Config) -> str | None:
+    if not result.get("success"):
+        return None
+    exit_info = result.get("exit") or {}
+    if not exit_info.get("ip"):
+        return "missing_exit_ip"
+    if cfg.exclude_abusers and exit_info.get("is_abuser") is True:
+        return "abuse_flag"
+    country = str(exit_info.get("country_code") or result.get("country_code") or "").upper()
+    if cfg.allowed_countries and country not in cfg.allowed_countries:
+        return "country_filter"
+    latency = result.get("latency_ms")
+    if not isinstance(latency, (int, float)) or isinstance(latency, bool) or latency < 0 or latency != latency:
+        return "invalid_latency"
+    if cfg.max_latency_ms and latency > cfg.max_latency_ms:
+        return "latency_limit"
+    return None
 
 
 def check_all(
@@ -669,52 +693,41 @@ def check_all(
     session: requests.Session,
     cfg: Config,
 ) -> tuple[list[dict[str, Any]], int]:
-    """并发检测；返回 (结果列表, 因整体超时未完成的数量)。"""
-    results: list[dict[str, Any]] = []
-    deadline = time.monotonic() + cfg.deadline_s
-    with ThreadPoolExecutor(max_workers=cfg.concurrency) as pool:
-        futures = {
-            pool.submit(check_one, node, session, cfg.worker_base, cfg.check_timeout): node
-            for node in nodes
-        }
-        pending = set(futures)
-        try:
-            for future in as_completed(pending, timeout=max(0.1, deadline - time.monotonic())):
-                pending.discard(future)
-                results.append(future.result())
-        except TimeoutError:
-            log("CLOUDFLARE WORKER", f"整体检测超时（{cfg.deadline_s:.0f}s），未完成的节点按失败处理")
+    """Cancellable async I/O; no executor threads left waiting at process exit."""
+    return asyncio.run(check_all_async(nodes, cfg))
 
-    timed_out = 0
-    for future in pending:
-        node = futures[future]
-        if future.done() and not future.cancelled():
-            # 截止瞬间刚好完成的请求，结果依然有效，不要丢掉
-            try:
-                results.append(future.result())
-                continue
-            except Exception:  # noqa: BLE001
-                pass
-        future.cancel()
-        stub = node.to_dict()
-        stub.update(
-            {
-                "protocol": "sstp",
-                "link": f"sstp://vpn:vpn@{node.host}:{node.port}",
-                "status": "failed",
-                "success": False,
-                "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                "exit": None,
-                "latency_ms": None,
-                "colo": None,
-                "error": "整体检测超时，未完成",
-                "worker_error": False,
-                "residential": "unknown",
-            }
-        )
-        results.append(stub)
-        timed_out += 1
-    return results, timed_out
+
+async def check_all_async(nodes: list[Node], cfg: Config) -> tuple[list[dict[str, Any]], int]:
+    results: dict[int, dict[str, Any]] = {}
+    queue = asyncio.Queue()
+    for index, node in enumerate(nodes):
+        queue.put_nowait((index, node))
+    headers = {"Authorization": f"Bearer {cfg.worker_token}"} if cfg.worker_token else {}
+    limits = httpx.Limits(max_connections=cfg.concurrency, max_keepalive_connections=cfg.concurrency)
+    async with httpx.AsyncClient(headers=headers, limits=limits, timeout=cfg.check_timeout) as client:
+        async def consume():
+            while not queue.empty():
+                index, node = queue.get_nowait()
+                result = empty_check(node)
+                try:
+                    response = await client.get(cfg.worker_base + quote(f"{node.host}:{node.port}", safe=""))
+                    response.raise_for_status()
+                    result = parse_check_payload(node, response.json())
+                except Exception as exc:
+                    result.update(error=f"{type(exc).__name__}: {exc}", worker_error=True)
+                results[index] = result
+        jobs = [asyncio.create_task(consume()) for _ in range(min(cfg.concurrency, len(nodes)))]
+        try:
+            await asyncio.wait_for(asyncio.gather(*jobs), timeout=cfg.deadline_s)
+        except TimeoutError:
+            log("CLOUDFLARE WORKER", f"整体检测达到 {cfg.deadline_s}s，取消未完成请求")
+        finally:
+            for job in jobs:
+                if not job.done():
+                    job.cancel()
+            await asyncio.gather(*jobs, return_exceptions=True)
+    timed_out = len(nodes) - len(results)
+    return [results.get(i) or empty_check(n, "overall_deadline") for i, n in enumerate(nodes)], timed_out
 
 
 # ---------------------------------------------------------------------------
@@ -780,11 +793,11 @@ def build_outputs(
     duration_s: float,
     timed_out: int,
 ) -> dict[str, Any]:
-    available = [r for r in results if r.get("success")]
+    available = [r for r in results if r.get("success") and not r.get("excluded_reason")]
     countries: dict[str, dict[str, Any]] = {}
     for node in available:
-        code = (node.get("country_code") or "").upper() or "??"
-        name = node.get("country") or COUNTRY_ZH.get(code) or code
+        code = ((node.get("exit") or {}).get("country_code") or node.get("country_code") or "").upper() or "??"
+        name = COUNTRY_ZH.get(code) or (node.get("exit") or {}).get("country") or node.get("country") or code
         group = countries.setdefault(
             code, {"code": code, "name": name, "count": 0, "residential": 0, "datacenter": 0, "unknown": 0, "nodes": []}
         )
@@ -809,6 +822,7 @@ def build_outputs(
         "failed": len(results) - len(available),
         "worker_errors": sum(1 for r in results if r.get("worker_error")),
         "timed_out": timed_out,
+        "excluded": sum(1 for r in results if r.get("excluded_reason")),
         "countries": len(countries),
         "residential_est": sum(1 for n in available if n.get("residential") == "residential"),
         "datacenter_est": sum(1 for n in available if n.get("residential") == "datacenter"),
@@ -872,6 +886,13 @@ def write_outputs(
     data: dict[str, Any], cfg: Config, edge_hosts: list[str]
 ) -> tuple[str, str, str, str]:
     os.makedirs(cfg.public_dir, exist_ok=True)
+    generated = datetime.now(timezone.utc)
+    data["generated_at"] = generated.isoformat()
+    data["expires_at"] = (generated + timedelta(seconds=cfg.result_ttl_s)).isoformat()
+    data["measurement"] = "Worker tunnel + IP lookup elapsed time; not client throughput"
+    data["quality_thresholds"] = {"min_success_count": cfg.min_success_count,
+                                  "min_success_ratio": cfg.min_success_ratio,
+                                  "max_latency_ms": cfg.max_latency_ms}
     data_path = os.path.join(cfg.public_dir, "data.json")
     html_path = os.path.join(cfg.public_dir, "index.html")
     nodes_path = os.path.join(cfg.public_dir, "nodes.txt")
@@ -958,7 +979,10 @@ def main() -> None:
     results, timed_out = check_all(unique_nodes, session, cfg)
     elapsed = time.time() - check_started
 
-    success = [r for r in results if r.get("success")]
+    for result in results:
+        result["excluded_reason"] = exclusion_reason(result, cfg)
+
+    success = [r for r in results if r.get("success") and not r.get("excluded_reason")]
     failed = [r for r in results if not r.get("success")]
     worker_errors = [r for r in failed if r.get("worker_error")]
 
@@ -969,6 +993,9 @@ def main() -> None:
 
     if unique_nodes and not success:
         die("RESULT", "所有节点检测失败，本次不发布（保留上一次产物）")
+
+    if len(success) < cfg.min_success_count:
+        die("RESULT", f"合格节点只有 {len(success)}，少于阈值 {cfg.min_success_count}；保留上次产物")
 
     ratio = len(success) / len(unique_nodes) if unique_nodes else 0.0
     if cfg.min_success_ratio > 0 and ratio < cfg.min_success_ratio:
@@ -993,9 +1020,9 @@ def main() -> None:
     data_path, html_path, nodes_path, nodes_text = write_outputs(data, cfg, edge_hosts)
     nodes_count = len([line for line in nodes_text.splitlines() if line.strip()])
     log("RESULT", f"可用节点 {data['stats']['success']}, 国家/地区 {data['stats']['countries']}, nodes.txt {nodes_count} 行")
-    log("WEBSITE", f"生成 {os.path.relpath(data_path, REPO_DIR)}")
-    log("WEBSITE", f"生成 {os.path.relpath(html_path, REPO_DIR)}")
-    log("WEBSITE", f"生成 {os.path.relpath(nodes_path, REPO_DIR)}")
+    log("WEBSITE", f"生成 {data_path}")
+    log("WEBSITE", f"生成 {html_path}")
+    log("WEBSITE", f"生成 {nodes_path}")
     log("USAGE", f"把 {cfg.nodes_url} 填入 edgetunnel 后台「自定义优选 IP」")
     write_step_summary(data, nodes_count, cfg)
     log("WEBSITE", "完成（GitHub Pages 部署由 workflow 执行）")
