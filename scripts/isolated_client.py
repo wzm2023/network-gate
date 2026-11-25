@@ -58,6 +58,16 @@ def fetch_config(session, deployment):
     config = isolate_config(response.json(), deployment['controller_secret'])
     if any(p.get('servername') != deployment['edge_host'] for p in config['proxies']):
         raise ValueError('Unexpected subscription TLS server name')
+    # Cloud-side latency isn't local application quality. Keep locally verified
+    # hosts ahead in the fallback list, using stable hosts rather than row names.
+    preferred = deployment.get('preferred_hosts', [])
+    rank = {}
+    for proxy in config['proxies']:
+        host = proxy.get('ws-opts', {}).get('path', '').rsplit('@', 1)[-1].rsplit(':', 1)[0]
+        rank[proxy['name']] = preferred.index(host) if host in preferred else len(preferred)
+    for group in config['proxy-groups']:
+        if group.get('name') == 'GATE-FALLBACK':
+            group['proxies'].sort(key=lambda name: rank.get(name, len(preferred)))
     # A protected workspace can reject a new unsigned native executable. Keep
     # the native runtime in the user's application directory without weakening
     # Windows folder protection; Python still owns the project control files.
