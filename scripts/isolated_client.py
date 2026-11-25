@@ -32,6 +32,7 @@ def isolate_config(source: dict, secret: str) -> dict:
         'external-controller': f'127.0.0.1:{CONTROLLER}', 'secret': secret,
         'mode': 'rule', 'log-level': 'warning', 'ipv6': False,
         'tun': {'enable': False}, 'dns': {'enable': False},
+        'profile': {'store-selected': False, 'store-fake-ip': False},
         'proxies': source['proxies'], 'proxy-groups': source.get('proxy-groups', []),
         'rules': ['MATCH,GATE'],
     }

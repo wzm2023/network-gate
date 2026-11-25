@@ -9,6 +9,7 @@ def test_subscription_cannot_take_over_system_or_existing_ports():
         'external-controller': '0.0.0.0:9090', 'external-controller-pipe': 'existing',
         'tun': {'enable': True, 'auto-route': True}, 'dns': {'enable': True, 'listen': ':53'},
         'listeners': [{'port': 80}], 'rules': ['MATCH,DIRECT'],
+        'profile': {'store-selected': True, 'store-fake-ip': True},
     }, 'x' * 40)
     assert config['mixed-port'] == 17898
     assert config['external-controller'] == '127.0.0.1:19091'
@@ -16,5 +17,6 @@ def test_subscription_cannot_take_over_system_or_existing_ports():
     assert config['tun'] == {'enable': False}
     assert config['dns'] == {'enable': False}
     assert config['rules'] == ['MATCH,GATE']
+    assert config['profile'] == {'store-selected': False, 'store-fake-ip': False}
     for field in ['port', 'redir-port', 'tproxy-port', 'listeners', 'external-controller-pipe']:
         assert field not in config
