@@ -2,8 +2,9 @@ import asyncio
 import time
 
 import httpx
-import vpngate
 from test_vpngate import make_config
+
+import vpngate
 
 
 def node(name="test"):

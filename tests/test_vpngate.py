@@ -1,6 +1,7 @@
 import base64
 
 import pytest
+
 import vpngate
 from vpngate import ConfigError, Node
 
