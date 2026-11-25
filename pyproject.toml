@@ -7,6 +7,9 @@ extend-exclude = ["public"]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["vpngate", "scripts"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

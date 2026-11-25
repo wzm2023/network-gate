@@ -1,3 +1,4 @@
+import {TcpReceiveQueue, parseIpv4Tcp, sstpControlReply, pppEchoReply} from '../sstp-tcp.mjs';
 const Version = '2026-11-10 23:26:46';
 let config_JSON, 缓存SOCKS5白名单 = null, 调试日志打印 = false;
 let SOCKS5白名单 = ['*tapecontent.net', '*cloudatacdn.com', '*loadshare.org', '*cdn-centaurus.com', 'scholar.google.com'];
@@ -4380,6 +4381,15 @@ async function sstpConnect(proxy, targetHost, targetPort, TCP连接) {
 		}
 	};
 	const readPacket = async (timeoutMs = CONNECT_TIMEOUT_MS) => {
+        if (bufferedBytes.length >= 4) {
+            const length = readSstpUint16(bufferedBytes, 2) & 0x0fff;
+            if (length < 4) throw new Error('Invalid SSTP packet length');
+            if (bufferedBytes.length >= length) {
+                const packet = {isControl: (bufferedBytes[1] & 1) !== 0, body: bufferedBytes.subarray(4, length)};
+                bufferedBytes = bufferedBytes.subarray(length);
+                return packet;
+            }
+        }
 		const header = await withTimeout(readBytes(4), timeoutMs, 'SSTP read timeout');
 		const length = readSstpUint16(header, 2) & 0x0fff;
 		if (length < 4) throw new Error('Invalid SSTP packet length');
@@ -4507,7 +4517,13 @@ async function sstpConnect(proxy, targetHost, targetPort, TCP连接) {
 
 		for (let round = 0; round < 50 && !ipcpFinished; round++) {
 			const packet = await readPacket(CONNECT_TIMEOUT_MS);
-			if (packet.isControl) continue;
+			if (packet.isControl) {
+                const reply = sstpControlReply(packet.body);
+                if (reply) await writer.write(reply);
+                const controlType = readSstpUint16(packet.body);
+                if (controlType === 5 || controlType === 6) throw new Error('SSTP peer disconnected');
+                continue;
+            }
 			const ppp = parsePPPFrame(packet.body);
 			if (!ppp) continue;
 
@@ -4588,10 +4604,12 @@ async function sstpConnect(proxy, targetHost, targetPort, TCP连接) {
 		tcpPseudoHeader.set(sourceAddress);
 		tcpPseudoHeader.set(destinationAddress, 4);
 		tcpPseudoHeader[9] = 6;
+        let ipIdentifier = randomSstpUint16();
 		const buildTcpFrame = (flags, payload = SSTP_EMPTY_BYTES) => {
 			const bytes = 数据转Uint8Array(payload);
 			const payloadLength = bytes.byteLength;
-			const tcpLength = 20 + payloadLength;
+            const tcpHeaderLength = (flags & 0x02) ? 24 : 20;
+			const tcpLength = tcpHeaderLength + payloadLength;
 			const ipLength = 20 + tcpLength;
 			const sstpLength = 8 + ipLength;
 			const frame = new Uint8Array(sstpLength);
@@ -4599,51 +4617,53 @@ async function sstpConnect(proxy, targetHost, targetPort, TCP连接) {
 			frame.set([0x10, 0x00, ((sstpLength >> 8) & 0x0f) | 0x80, sstpLength & 0xff, 0xff, 0x03, 0x00, 0x21]);
 			frame.set(ipHeaderTemplate, 8);
 			view.setUint16(10, ipLength);
-			view.setUint16(12, randomSstpUint16());
+			view.setUint16(12, ipIdentifier++ & 0xffff);
 			view.setUint16(18, internetChecksum(frame, 8, 20));
 			view.setUint16(28, sourcePort);
 			view.setUint16(30, targetPort);
 			view.setUint32(32, sequenceNumber);
 			view.setUint32(36, acknowledgementNumber);
-			frame[40] = 0x50;
+			frame[40] = (tcpHeaderLength / 4) << 4;
 			frame[41] = flags;
 			view.setUint16(42, 65535);
-			if (payloadLength) frame.set(bytes, 48);
+			if (flags & 0x02) frame.set([2, 4, SSTP_TCP_MSS >> 8, SSTP_TCP_MSS & 0xff], 48);
+            if (payloadLength) frame.set(bytes, 28 + tcpHeaderLength);
 			tcpPseudoHeader[10] = tcpLength >> 8;
 			tcpPseudoHeader[11] = tcpLength & 0xff;
 			tcpPseudoHeader.set(frame.subarray(28, 28 + tcpLength), 12);
 			view.setUint16(44, internetChecksum(tcpPseudoHeader, 0, 12 + tcpLength));
 			return frame;
 		};
-		const matchIncomingIpPacket = ipPacket => {
-			if (ipPacket.byteLength < 40 || ipPacket[9] !== 6) return null;
-			const ipHeaderLength = (ipPacket[0] & 0x0f) * 4;
-			if (ipPacket.byteLength < ipHeaderLength + 20) return null;
-			if (readSstpUint16(ipPacket, ipHeaderLength) !== targetPort) return null;
-			if (readSstpUint16(ipPacket, ipHeaderLength + 2) !== sourcePort) return null;
-			return {
-				flags: ipPacket[ipHeaderLength + 13],
-				sequence: readSstpUint32(ipPacket, ipHeaderLength + 4),
-				payloadOffset: ipHeaderLength + ((ipPacket[ipHeaderLength + 12] >> 4) & 0x0f) * 4
-			};
-		};
+		const matchIncomingIpPacket = ipPacket =>
+            parseIpv4Tcp(ipPacket, sourcePort, targetPort, sourceAddress, destinationAddress);
 
 		await withTimeout(writer.write(buildTcpFrame(0x02)), CONNECT_TIMEOUT_MS, 'SSTP TCP SYN write timed out');
 		sequenceNumber = (sequenceNumber + 1) >>> 0;
 		let tcpReady = false;
 		for (let attempt = 0; attempt < 30; attempt++) {
 			const packet = await readPacket(CONNECT_TIMEOUT_MS);
-			if (packet.isControl) continue;
+			if (packet.isControl) {
+                const reply = sstpControlReply(packet.body);
+                if (reply) await writer.write(reply);
+                const controlType = readSstpUint16(packet.body);
+                if (controlType === 5 || controlType === 6) throw new Error('SSTP peer disconnected');
+                continue;
+            }
 			const ppp = parsePPPFrame(packet.body);
-			if (!ppp || ppp.protocol !== 0x0021) continue;
+			if (ppp?.protocol === 0xc021) {
+                const reply = pppEchoReply(ppp.rawPacket);
+                if (reply) await writer.write(buildSstpDataPacket(reply));
+            }
+            if (!ppp || ppp.protocol !== 0x0021) continue;
 			const tcp = matchIncomingIpPacket(ppp.ipPacket);
-			if (!tcp || (tcp.flags & 0x12) !== 0x12) continue;
+			if (!tcp || (tcp.flags & 0x12) !== 0x12 || tcp.acknowledgment !== sequenceNumber) continue;
 			acknowledgementNumber = (tcp.sequence + 1) >>> 0;
 			await withTimeout(writer.write(buildTcpFrame(0x10)), CONNECT_TIMEOUT_MS, 'SSTP TCP ACK write timed out');
 			tcpReady = true;
 			break;
 		}
 		if (!tcpReady) throw new Error('TCP handshake through SSTP timed out');
+        const receiveQueue = new TcpReceiveQueue(acknowledgementNumber);
 
 		/** @type {ReadableStreamDefaultController<Uint8Array> | null} */
 		let streamController = null;
@@ -4670,36 +4690,46 @@ async function sstpConnect(proxy, targetHost, targetPort, TCP连接) {
 
 				for (; ;) {
 					const packet = await readPacket(60000);
-					if (packet.isControl) continue;
+					if (packet.isControl) {
+                const reply = sstpControlReply(packet.body);
+                if (reply) await writer.write(reply);
+                const controlType = readSstpUint16(packet.body);
+                if (controlType === 5 || controlType === 6) throw new Error('SSTP peer disconnected');
+                continue;
+            }
 					const ppp = parsePPPFrame(packet.body);
-					if (!ppp || ppp.protocol !== 0x0021) continue;
+					if (ppp?.protocol === 0xc021) {
+                const reply = pppEchoReply(ppp.rawPacket);
+                if (reply) await writer.write(buildSstpDataPacket(reply));
+            }
+            if (!ppp || ppp.protocol !== 0x0021) continue;
 					const incoming = matchIncomingIpPacket(ppp.ipPacket);
 					if (!incoming) continue;
 
-					if (incoming.payloadOffset < ppp.ipPacket.byteLength) {
-						const payload = ppp.ipPacket.subarray(incoming.payloadOffset);
-						if (payload.byteLength) {
-							acknowledgementNumber = (incoming.sequence + payload.byteLength) >>> 0;
-							pendingChunks.push(new Uint8Array(payload));
-							pendingLength += payload.byteLength;
-						}
-					}
-
-					if (incoming.flags & 0x01) {
-						flush();
-						acknowledgementNumber = (acknowledgementNumber + 1) >>> 0;
-						writer.write(buildTcpFrame(0x11)).catch(() => { });
-						const controller = streamController;
-						if (controller) {
-							try { controller.close() } catch (e) { }
-						}
-						close();
-						return;
-					}
+                    if (incoming.flags & 0x04) throw new Error('SSTP remote TCP reset');
+                    const payload = ppp.ipPacket.subarray(incoming.payloadOffset, incoming.payloadEnd);
+                    const previousAck = acknowledgementNumber;
+                    const received = receiveQueue.push(incoming.sequence, payload, !!(incoming.flags & 0x01));
+                    acknowledgementNumber = received.next;
+                    for (const chunk of received.chunks) {
+                        pendingChunks.push(chunk);
+                        pendingLength += chunk.length;
+                    }
+                    if (received.closed) {
+                        flush();
+                        await writer.write(buildTcpFrame(0x11));
+                        try { streamController?.close() } catch {}
+                        close();
+                        return;
+                    }
+                    // Acknowledge gaps/duplicates promptly; never ACK past missing bytes.
+                    if (payload.length && (incoming.sequence !== previousAck || !received.chunks.length))
+                        await writer.write(buildTcpFrame(0x10));
 
 					if (bufferedBytes.byteLength < 4 || pendingLength >= 32768) flush();
 				}
 			} catch (error) {
+                console.warn('SSTP receive stopped', error.message);
 				const controller = streamController;
 				if (controller) {
 					try { controller.error(error) } catch (e) { }

@@ -4,6 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from patch_sstp import patch_sstp
+
 ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = ROOT.parent / 'network-gate-workbench'
 OUT = ROOT / 'workers' / 'vendor'
@@ -37,6 +39,8 @@ for name, folder in [('checker', 'checker-upstream'), ('edgetunnel', 'edgetunnel
             if text.count(old) != 1:
                 raise RuntimeError(f'Upstream changed: {key}')
             text = text.replace(old, f"typeof exit.privacy?.{key} === 'boolean' ? exit.privacy.{key} : null")
+    else:
+        text = patch_sstp(text)
     (OUT / f'{name}.mjs').write_text(text, encoding='utf-8')
     license_path = source / 'LICENSE'
     if license_path.exists():

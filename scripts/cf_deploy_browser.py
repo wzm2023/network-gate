@@ -28,8 +28,11 @@ def evaluate(target, code):
 
 def api(target, account, path, method='GET', body=None):
     code = '''(async()=>{
-      const r=await fetch(PATH,{method:METHOD,headers:{'Content-Type':'application/json'},body:BODY});
-      const d=await r.json();return JSON.stringify({status:r.status,...d});
+      const r=await fetch(PATH,{method:METHOD,headers:{'Content-Type':'application/json'},
+        signal:AbortSignal.timeout(20000),body:BODY});
+      const text=await r.text();let d;
+      try{d=JSON.parse(text);}catch{d={success:false,errors:['non_json_response']};}
+      return JSON.stringify({status:r.status,...d});
     })()'''.replace('PATH', json.dumps('/api/v4/accounts/' + account + path)).replace(
         'METHOD', json.dumps(method)).replace('BODY', 'undefined' if body is None else json.dumps(json.dumps(body)))
     result = evaluate(target, code)
@@ -43,7 +46,7 @@ def upload(target, state, kind):
         files = ['checker.mjs', 'policy.mjs', 'vendor/checker.mjs']
         bindings = [{'name': 'CHECK_TOKEN', 'type': 'secret_text', 'text': state['check_token']}]
     else:
-        files = ['edge.mjs', 'policy.mjs', 'vendor/edgetunnel.mjs']
+        files = ['edge.mjs', 'policy.mjs', 'sstp-tcp.mjs', 'vendor/edgetunnel.mjs']
         bindings = [{'name': key, 'type': 'secret_text', 'text': state[value]} for key, value in
                     [('ADMIN', 'admin_password'), ('KEY', 'admin_key'), ('UUID', 'uuid'), ('SUB_TOKEN', 'sub_token'), ('PUBLISH_TOKEN', 'publish_token')]]
         bindings += [{'name': 'KV', 'type': 'kv_namespace', 'namespace_id': state['kv_namespace_id']},
@@ -52,7 +55,7 @@ def upload(target, state, kind):
                      {'name': 'TCP_CONCURRENT_DIAL', 'type': 'plain_text', 'text': '1'},
                      {'name': 'PROXY_CONCURRENT_DIAL', 'type': 'plain_text', 'text': '1'}]
     metadata = {'main_module': kind + '.mjs', 'compatibility_date': '2025-11-04', 'bindings': bindings,
-                'observability': {'enabled': True, 'head_sampling_rate': 0.1},
+                'observability': {'enabled': True, 'head_sampling_rate': state.get('observability_sampling', 0.1)},
                 'tags': ['network-gate-20261126']}
     sources = {name: (ROOT / 'workers' / name).read_text(encoding='utf-8') for name in files}
     script = state[kind + '_name']
