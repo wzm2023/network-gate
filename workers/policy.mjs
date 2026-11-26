@@ -42,6 +42,22 @@ export function proxyEntries(nodes, host, uuid) {
   }));
 }
 
+export function residentialCandidates(nodes) {
+  return nodes.filter(n => n.residential === 'residential' && n.exit?.is_datacenter === false &&
+    n.exit?.is_abuser !== true && n.exit?.is_tor !== true && typeof n.exit?.ip === 'string' &&
+    typeof n.exit?.org === 'string' && n.exit.org.length > 0);
+}
+
+export function subscriptionMetadata(data, nodes, proxies, residentialOnly) {
+  return {mode: residentialOnly ? 'residential-candidates' : 'mixed',
+    generated_at: data.generated_at, expires_at: data.expires_at,
+    nodes: Object.fromEntries(proxies.map((p, i) => [p.name, {
+      host: nodes[i].host, port: nodes[i].port, exit_ip: nodes[i].exit?.ip,
+      candidate: nodes[i].residential === 'residential', org: nodes[i].exit?.org,
+      is_datacenter: nodes[i].exit?.is_datacenter, is_abuser: nodes[i].exit?.is_abuser,
+    }]))};
+}
+
 export function clashConfig(proxies) {
   const names = proxies.map(p => p.name);
   return {

@@ -10,6 +10,8 @@ test('deployed handlers reject absent credentials before opening connections', a
   assert.equal((await checker.fetch(request('/check?sstp=vpn:vpn@a.opengw.net:443'), {})).status, 401);
   assert.equal((await edge.fetch(request('/subscription/clash'), {}, {})).status, 401);
   assert.equal((await edge.fetch(request('/publish', {method: 'POST', body: '{}'}), {}, {})).status, 401);
+  assert.equal((await edge.fetch(request('/discovery'), {}, {})).status, 401);
+  assert.equal((await edge.fetch(request('/check'), {}, {})).status, 401);
 });
 
 test('checker rejects arbitrary targets even with a correct token', async () => {
@@ -35,4 +37,27 @@ test('native subscription stays local and keeps credentials out of public status
   assert.equal(cfg.proxies.length, 1);
   assert.equal(cfg.proxies[0].uuid, env.UUID);
   assert.match(res.headers.get('Cache-Control'), /no-store/);
+});
+
+test('strict subscriptions contain only residential candidates and fail closed with an empty pool', async () => {
+  const nodes = ['home', 'unknown', 'hosting'].map(host => ({host: host + '.opengw.net', port: 443, success: true,
+    residential: host === 'home' ? 'residential' : host === 'hosting' ? 'datacenter' : 'unknown',
+    exit: {ip: '60.73.52.173', org: 'Example ISP', is_datacenter: host === 'hosting'}}));
+  const data = {generated_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60000).toISOString(), countries: {JP: {nodes}}};
+  const env = {SUB_TOKEN: secret, PUBLISH_TOKEN: secret, UUID: 'uuid-test', HOST: 'gate.test', RESIDENTIAL_ONLY: 'true',
+    KV: {get: async () => null, put: async () => {}}};
+  const headers = {Authorization: `Bearer ${secret}`};
+  const publish = () => edge.fetch(request('/publish', {method: 'POST', headers, body: JSON.stringify(data)}), env, {});
+  assert.equal((await publish()).status, 200);
+  const res = await edge.fetch(request('/subscription/clash', {headers}), env, {});
+  assert.equal(res.status, 200);
+  const cfg = await res.json();
+  assert.equal(cfg.proxies.length, 1);
+  assert.equal(cfg['x-gate'].mode, 'residential-candidates');
+  assert.equal(cfg['x-gate'].nodes[cfg.proxies[0].name].candidate, true);
+  nodes[0].residential = 'unknown';
+  assert.equal((await publish()).status, 200);
+  const empty = await edge.fetch(request('/subscription/clash', {headers}), env, {});
+  assert.equal(empty.status, 503);
+  assert.equal((await empty.json()).error, 'no_residential_candidates');
 });

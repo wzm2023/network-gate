@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {authorized, validGateAuthority, freshNodes, proxyEntries, clashConfig, vlessLinks} from '../workers/policy.mjs';
+import {authorized, validGateAuthority, freshNodes, proxyEntries, clashConfig, vlessLinks, residentialCandidates, subscriptionMetadata} from '../workers/policy.mjs';
 
 test('authentication fails closed and query tokens require explicit permission', () => {
   const secret = 'x'.repeat(40);
@@ -36,4 +36,16 @@ test('client configuration is loopback only, has no TUN or system DNS, and expli
   assert.match(proxies[0]['ws-opts'].path, /^\/sstp:\/\//);
   assert.equal(config['proxy-groups'][1].type, 'fallback');
   assert.match(vlessLinks(proxies), /^vless:\/\//);
+});
+
+test('residential pool excludes unknown hosting, datacenter, abuse and missing evidence', () => {
+  const home = {host: 'a.opengw.net', port: 443, residential: 'residential',
+    exit: {ip: '60.73.52.173', org: 'Example ISP', is_datacenter: false}};
+  const nodes = [home, {...home, residential: 'unknown'}, {...home, exit: {...home.exit, is_datacenter: null}},
+    {...home, exit: {...home.exit, is_datacenter: true}}, {...home, exit: {...home.exit, is_abuser: true}}];
+  assert.deepEqual(residentialCandidates(nodes), [home]);
+  const proxies = proxyEntries([home], 'gate.test', 'uuid');
+  const metadata = subscriptionMetadata({generated_at: 'created', expires_at: 'expires'}, [home], proxies, true);
+  assert.equal(metadata.mode, 'residential-candidates');
+  assert.equal(metadata.nodes[proxies[0].name].exit_ip, home.exit.ip);
 });

@@ -1,191 +1,66 @@
-"""Own only the child process and loopback ports created by this project."""
-from __future__ import annotations
-
+"""Start/stop only the independently managed Network Gate client."""
 import argparse
+import contextlib
 import json
-import os
-import socket
 import subprocess
 import sys
-import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / '.deps'))
-import requests  # noqa: E402
-
-CLIENT = ROOT / '.private' / 'client'
-STATE = CLIENT / 'supervisor.json'
-STOP = CLIENT / 'stop.request'
-REFRESH = CLIENT / 'refresh.request'
-PORT = 17898
-CONTROLLER = 19091
-
-
-def isolate_config(source: dict, secret: str) -> dict:
-    if not isinstance(source.get('proxies'), list) or not source['proxies']:
-        raise ValueError('No usable proxies in subscription')
-    # Build a small allowlist, rather than accepting remote process/listener options.
-    return {
-        'mixed-port': PORT, 'allow-lan': False, 'bind-address': '127.0.0.1',
-        'external-controller': f'127.0.0.1:{CONTROLLER}', 'secret': secret,
-        'mode': 'rule', 'log-level': 'warning', 'ipv6': False,
-        'tun': {'enable': False}, 'dns': {'enable': False},
-        'profile': {'store-selected': False, 'store-fake-ip': False},
-        'proxies': source['proxies'], 'proxy-groups': source.get('proxy-groups', []),
-        'rules': ['MATCH,GATE'],
-    }
-
-
-def direct_session():
-    session = requests.Session()
-    session.trust_env = False
-    return session
-
-
-def write_state(**state):
-    state['updated_at'] = datetime.now(timezone.utc).isoformat()
-    tmp = STATE.with_suffix('.tmp')
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(tmp, STATE)
-
-
-def fetch_config(session, deployment):
-    response = session.get('https://' + deployment['edge_host'] + '/subscription/clash',
-                           headers={'Authorization': 'Bearer ' + deployment['sub_token']}, timeout=25)
-    response.raise_for_status()
-    config = isolate_config(response.json(), deployment['controller_secret'])
-    if any(p.get('servername') != deployment['edge_host'] for p in config['proxies']):
-        raise ValueError('Unexpected subscription TLS server name')
-    # Cloud-side latency isn't local application quality. Keep locally verified
-    # hosts ahead in the fallback list, using stable hosts rather than row names.
-    preferred = deployment.get('preferred_hosts', [])
-    rank = {}
-    for proxy in config['proxies']:
-        host = proxy.get('ws-opts', {}).get('path', '').rsplit('@', 1)[-1].rsplit(':', 1)[0]
-        rank[proxy['name']] = preferred.index(host) if host in preferred else len(preferred)
-    for group in config['proxy-groups']:
-        if group.get('name') == 'GATE-FALLBACK':
-            group['proxies'].sort(key=lambda name: rank.get(name, len(preferred)))
-    # A protected workspace can reject a new unsigned native executable. Keep
-    # the native runtime in the user's application directory without weakening
-    # Windows folder protection; Python still owns the project control files.
-    directories = {CLIENT, Path(deployment.get('client_runtime', str(CLIENT)))}
-    for directory in directories:
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / 'config.json'
-        tmp = directory / 'config.next.json'
-        tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding='utf-8')
-        os.replace(tmp, path)
-    return len(config['proxies'])
-
-
-def check_ports():
-    for port in (PORT, CONTROLLER):
-        with socket.socket() as probe:
-            probe.bind(('127.0.0.1', port))
-
-
-def run():
-    CLIENT.mkdir(parents=True, exist_ok=True)
-    check_ports()  # Never replace another process, even one using our intended port.
-    STOP.unlink(missing_ok=True)
-    REFRESH.unlink(missing_ok=True)
-    deployment = json.loads((ROOT / '.private/deployment.json').read_text(encoding='utf-8'))
-    executable = Path(deployment['client_executable'])
-    if not executable.is_file():
-        raise FileNotFoundError('Configured Mihomo executable is unavailable')
-    http = direct_session()
-    count = fetch_config(http, deployment)
-    core_home = Path(deployment.get('client_runtime', str(CLIENT)))
-    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-    with (CLIENT / 'core.log').open('a', encoding='utf-8') as log:
-        child = subprocess.Popen([str(executable), '-d', str(core_home), '-f', str(core_home / 'config.json')],
-                                 stdout=log, stderr=subprocess.STDOUT, creationflags=creation_flags)
-        state = {'status': 'starting', 'supervisor_pid': os.getpid(), 'client_pid': child.pid,
-                 'proxy': f'http://127.0.0.1:{PORT}', 'nodes': count,
-                 'last_refresh': datetime.now(timezone.utc).isoformat()}
-        headers = {'Authorization': 'Bearer ' + deployment['controller_secret']}
-        try:
-            for attempt in range(20):
-                if child.poll() is not None:
-                    raise RuntimeError('Independent client exited during startup')
-                try:
-                    response = http.get(f'http://127.0.0.1:{CONTROLLER}/version', headers=headers, timeout=1)
-                    response.raise_for_status()
-                    break
-                except requests.RequestException:
-                    time.sleep(0.5)
-            else:
-                raise RuntimeError('Independent controller did not become ready')
-            state['status'] = 'running'
-            write_state(**state)
-            next_refresh = time.monotonic() + 1800
-            while not STOP.exists():
-                if child.poll() is not None:
-                    raise RuntimeError('Independent client stopped unexpectedly; check core.log')
-                if REFRESH.exists() or time.monotonic() >= next_refresh:
-                    REFRESH.unlink(missing_ok=True)
-                    try:
-                        count = fetch_config(http, deployment)
-                        response = http.put(f'http://127.0.0.1:{CONTROLLER}/configs?force=true',
-                                            headers=headers, json={'path': str(core_home / 'config.json')}, timeout=10)
-                        response.raise_for_status()
-                        state.update(status='running', nodes=count, last_refresh=datetime.now(timezone.utc).isoformat())
-                        state.pop('refresh_error', None)
-                    except Exception as error:
-                        state.update(status='degraded', refresh_error=type(error).__name__)
-                    write_state(**state)
-                    next_refresh = time.monotonic() + 1800
-                time.sleep(1)
-        except Exception as error:
-            state.update(status='error', error=str(error))
-            write_state(**state)
-            raise
-        finally:
-            # Terminate the exact child HANDLE we created, not a process name or PID search.
-            if child.poll() is None:
-                child.terminate()
-                child.wait(timeout=10)
-            if STOP.exists():
-                STOP.unlink(missing_ok=True)
-                state['status'] = 'stopped'
-                write_state(**state)
+sys.path[:0] = [str(ROOT), str(ROOT / '.deps')]
+from scripts.client_runtime import (  # noqa: E402
+    CLIENT,
+    CREATE_FLAGS,
+    DISABLED,
+    REFRESH,
+    STATE,
+    STOP,
+    acquire_lock,
+    supervise,
+)
+from scripts.client_runtime import isolate_config as isolate_config  # noqa: E402,F401
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=['start', 'run', 'stop', 'status', 'refresh'])
+    parser.add_argument('--scheduled', action='store_true')
     args = parser.parse_args()
     CLIENT.mkdir(parents=True, exist_ok=True)
     if args.action == 'run':
-        run()
+        if args.scheduled:
+            with (CLIENT / 'supervisor.log').open('a', encoding='utf-8') as log:
+                with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+                    supervise(scheduled=True)
+        else:
+            supervise()
     elif args.action == 'stop':
-        STOP.write_text('stop only this project supervisor\n', encoding='utf-8')
-        print('Stop requested for the independent client; existing system proxy is untouched.')
-    elif args.action == 'status':
-        print(STATE.read_text(encoding='utf-8') if STATE.exists() else 'Not started')
+        DISABLED.write_text('User stopped independent Network Gate\n', encoding='utf-8')
+        STOP.write_text('stop only this project\n', encoding='utf-8')
+        print('Independent client stop requested; automatic restart remains disabled until Start.')
     elif args.action == 'refresh':
-        REFRESH.write_text('refresh this project subscription\n', encoding='utf-8')
-        print('Subscription refresh requested. Check status for the updated timestamp.')
+        REFRESH.write_text('refresh\n', encoding='utf-8')
+        print('Subscription refresh requested')
+    elif args.action == 'status':
+        state = json.loads(STATE.read_text(encoding='utf-8')) if STATE.exists() else {'status': 'not_started'}
+        state['manually_disabled'] = DISABLED.exists()
+        lock = acquire_lock()
+        if lock is not None:
+            lock.close()
+            state['status'] = 'stopped' if DISABLED.exists() else 'awaiting_watchdog_or_start'
+        print(json.dumps(state, ensure_ascii=False, indent=2))
     else:
-        deployment = json.loads((ROOT / '.private/deployment.json').read_text(encoding='utf-8'))
-        try:
-            with direct_session() as http:
-                response = http.get(f'http://127.0.0.1:{CONTROLLER}/version',
-                                    headers={'Authorization': 'Bearer ' + deployment['controller_secret']}, timeout=1)
-                if response.ok:
-                    print(f'Independent client is already running: http://127.0.0.1:{PORT}')
-                    return
-        except requests.RequestException:
-            pass
-        check_ports()
+        lock = acquire_lock()
+        if lock is None:
+            print('Independent supervisor is already running')
+            return
+        lock.close()
+        DISABLED.unlink(missing_ok=True)
+        STOP.unlink(missing_ok=True)
         with (CLIENT / 'supervisor.log').open('a', encoding='utf-8') as log:
             child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'run'], cwd=ROOT,
-                                     stdout=log, stderr=subprocess.STDOUT,
-                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-        print(f'Independent supervisor started: {child.pid}. Proxy: http://127.0.0.1:{PORT}')
+                                     stdout=log, stderr=subprocess.STDOUT, creationflags=CREATE_FLAGS)
+        print(f'Independent supervisor started: {child.pid}. Proxy: http://127.0.0.1:17898')
 
 
 if __name__ == '__main__':

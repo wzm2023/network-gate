@@ -947,7 +947,7 @@ def write_step_summary(data: dict[str, Any], nodes_count: int, cfg: Config) -> N
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
-def main() -> None:
+def main(rows_override=None, source_override=None) -> None:
     started = time.time()
     try:
         cfg = Config.load()
@@ -958,7 +958,7 @@ def main() -> None:
     log("CONFIG", f"检测地址: {cfg.worker_base.rsplit('?', 1)[0]}?sstp=***")
     log("CONFIG", f"并发 {cfg.concurrency}, 单节点超时 {cfg.check_timeout}s, 整体截止 {cfg.deadline_s}s")
 
-    rows, source = fetch_vpngate(cfg, session)
+    rows, source = fetch_vpngate(cfg, session) if rows_override is None else (rows_override, source_override)
     raw_count = len(rows)
     if raw_count == 0:
         die("VPN GATE", "VPN Gate 返回 0 个原始节点，拒绝生成空结果")

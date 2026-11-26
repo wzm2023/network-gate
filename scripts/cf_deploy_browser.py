@@ -48,10 +48,12 @@ def upload(target, state, kind):
     else:
         files = ['edge.mjs', 'policy.mjs', 'sstp-tcp.mjs', 'vendor/edgetunnel.mjs']
         bindings = [{'name': key, 'type': 'secret_text', 'text': state[value]} for key, value in
-                    [('ADMIN', 'admin_password'), ('KEY', 'admin_key'), ('UUID', 'uuid'), ('SUB_TOKEN', 'sub_token'), ('PUBLISH_TOKEN', 'publish_token')]]
+                    [('ADMIN', 'admin_password'), ('KEY', 'admin_key'), ('UUID', 'uuid'), ('SUB_TOKEN', 'sub_token'), ('PUBLISH_TOKEN', 'publish_token'), ('CHECK_TOKEN', 'check_token')]]
         bindings += [{'name': 'KV', 'type': 'kv_namespace', 'namespace_id': state['kv_namespace_id']},
                      {'name': 'HOST', 'type': 'plain_text', 'text': state['edge_host']},
                      {'name': 'NODE_LIST_URL', 'type': 'plain_text', 'text': state['node_list_url']},
+                     {'name': 'CHECKER', 'type': 'service', 'service': state['checker_name']},
+                     {'name': 'RESIDENTIAL_ONLY', 'type': 'plain_text', 'text': str(state.get('residential_only', False)).lower()},
                      {'name': 'TCP_CONCURRENT_DIAL', 'type': 'plain_text', 'text': '1'},
                      {'name': 'PROXY_CONCURRENT_DIAL', 'type': 'plain_text', 'text': '1'}]
     metadata = {'main_module': kind + '.mjs', 'compatibility_date': '2025-11-04', 'bindings': bindings,

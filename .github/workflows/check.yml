@@ -16,10 +16,10 @@ jobs:
     timeout-minutes: 15
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.11'
           cache: pip
@@ -50,15 +50,22 @@ jobs:
           EDGE_HOST: ${{ vars.EDGE_HOST }}
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
         run: python scripts/publish_nodes.py
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@v6.0.0
+      - uses: actions/upload-pages-artifact@v5.0.0
         with:
           path: public
-      - uses: actions/deploy-pages@v4
+      - uses: actions/deploy-pages@v5.0.1
         id: deployment
+        continue-on-error: true
+      - name: Retry Pages publication after artifact propagation
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 15
+      - uses: actions/deploy-pages@v5.0.1
+        if: steps.deployment.outcome == 'failure'
+        id: deployment_retry
       - name: Verify published freshness
         env:
-          SITE_URL: ${{ steps.deployment.outputs.page_url }}
+          SITE_URL: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}
         run: python scripts/check_published.py
   heartbeat:
     needs: check
@@ -68,8 +75,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.11'
       - name: Record successful maintenance at most once per 14 days
