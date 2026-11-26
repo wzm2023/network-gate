@@ -41,7 +41,7 @@ Pages Source 设置为 GitHub Actions。执行 `VPN Gate Node Check` 可立即�
 
 - `/subscription/clash?token=...`：JSON 格式的完整 Clash/Mihomo 配置（JSON 是 YAML 的子集）。
 - `/subscription/v2ray?token=...`：Base64 编码 VLESS 链接列表。
-- `/subscription/karing?token=...`：Karing 专用住宅候选订阅，使用 `url-test` 自动选择组及稳定的主机名标识。
+- `/subscription/karing?token=...`：Karing 专用 Clash YAML 住宅候选订阅，使用 `url-test` 自动选择组及稳定的主机名标识。实际输出 YAML，避免 Android 1.2.25.2802 将 JSON 写法的 Clash 配置报为 `JSON UNKNOWN FORMAT`。
 - `/status?token=...`：节点数量、更新时间、过期时间。
 - `/health`：不含凭据的服务存活状态。
 

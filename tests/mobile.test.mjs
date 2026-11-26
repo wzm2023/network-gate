@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {karingConfig} from '../workers/policy.mjs';
+import {karingConfig, karingYaml} from '../workers/policy.mjs';
 
 test('Karing subscription uses supported url-test groups and stable node identities', () => {
   const nodes = ['a', 'b'].map(host => ({host: host + '.opengw.net', port: 443, residential: 'residential',
@@ -16,4 +16,20 @@ test('Karing subscription uses supported url-test groups and stable node identit
   assert.equal(config.proxies[0]['ws-opts'].path, reordered.proxies[1]['ws-opts'].path);
   assert.equal('dns' in config, false, 'Karing manages DNS in the app, not this subscription');
   assert.equal('tun' in config, false);
+});
+
+test('mobile YAML begins with the Clash discriminator and preserves escaped flow values', () => {
+  const nodes = [{host: 'a.opengw.net', port: 443, residential: 'residential', exit: {country_code: 'JP'}}];
+  const expected = karingConfig(nodes, 'gate.test', 'uuid');
+  const document = karingYaml(nodes, 'gate.test', 'uuid');
+  assert.match(document, /^proxies:\n  - /);
+  assert.equal(document.trimStart().startsWith('{'), false);
+  const restored = {};
+  let section;
+  for (const line of document.trimEnd().split('\n')) {
+    if (!line.startsWith(' ')) { section = line.slice(0, -1); restored[section] = []; }
+    else restored[section].push(JSON.parse(line.slice(4)));
+  }
+  assert.deepEqual(restored, expected);
+  assert.equal(restored.proxies[0]['ws-opts'].path, '/sstp://vpn:vpn@a.opengw.net:443');
 });

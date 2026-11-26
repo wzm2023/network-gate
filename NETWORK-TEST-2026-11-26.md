@@ -34,6 +34,8 @@ JP-07 的检查服务复测也返回 `SSTP server connection timed out`；同次
 
 官方依据：[Karing Clash 兼容列表](https://karing.app/clash)、[DNS 手册](https://karing.app/app-manual/dns)、[常见问题](https://karing.app/faq)。
 
+后续格式修复：用户在 Android Karing 1.2.25.2802 导入时出现 `JSON UNKNOWN FORMAT`。原响应采用 JSON 写法的 Clash 配置；它通过 Mihomo 校验，仍未被此版本 Karing 的自动格式识别接受。现已在原地址输出以 `proxies:` 开头的 Clash YAML，并设置 `application/yaml`。回归检查覆盖实际 HTTP 响应格式、节点 / 分组 / 路径保持一致及鉴权，线上 YAML 解析通过；用户已确认该安卓版本成功导入。此前仅用 Mihomo 解析来代替 Karing 导入验证是不充分的。
+
 ## 手机使用
 
 新的 Karing 专用地址保存在 `.private/使用信息.md`。导入后选择“住宅候选-自动选择”；它根据可达性与延迟选择节点，并不是带宽测速择优，实际测速间隔受 Karing 的设置和版本影响。也可手动测试当前列表中的美国 `vpn445617380` 候选，前提是它仍在线且通过住宅候选筛选。

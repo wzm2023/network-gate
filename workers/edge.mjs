@@ -1,5 +1,5 @@
 import upstream from './vendor/edgetunnel.mjs';
-import {authorized, validGateAuthority, freshNodes, proxyEntries, clashConfig, karingConfig, vlessLinks, residentialCandidates, subscriptionMetadata} from './policy.mjs';
+import {authorized, validGateAuthority, freshNodes, proxyEntries, clashConfig, karingYaml, vlessLinks, residentialCandidates, subscriptionMetadata} from './policy.mjs';
 
 let cachedData = null;
 let cachedAt = 0;
@@ -76,7 +76,10 @@ export default {
         const headers = {'Cache-Control': 'private, no-store', 'Content-Type': 'text/plain; charset=utf-8', 'profile-update-interval': '1'};
         if (url.pathname === '/subscription/karing') {
           if (!candidates.length) throw new Error('no_residential_candidates');
-          return new Response(JSON.stringify(karingConfig(candidates, env.HOST || url.hostname, env.UUID), null, 2), {headers});
+          return new Response(karingYaml(candidates, env.HOST || url.hostname, env.UUID), {
+            headers: {...headers, 'Content-Type': 'application/yaml; charset=utf-8',
+              'Content-Disposition': 'inline; filename="network-gate-karing.yaml"'},
+          });
         }
         if (url.pathname === '/subscription/clash') {
           const config = clashConfig(proxies);

@@ -57,9 +57,12 @@ test('strict subscriptions contain only residential candidates and fail closed w
   assert.equal(cfg['x-gate'].nodes[cfg.proxies[0].name].candidate, true);
   const mobile = await edge.fetch(request('/subscription/karing', {headers}), env, {});
   assert.equal(mobile.status, 200);
-  const mobileConfig = await mobile.json();
-  assert.equal(mobileConfig.proxies.length, 1);
-  assert.equal(mobileConfig['proxy-groups'][1].type, 'url-test');
+  assert.match(mobile.headers.get('Content-Type'), /application\/yaml/);
+  const mobileText = await mobile.text();
+  assert.match(mobileText, /^proxies:\n/);
+  assert.equal(mobileText.trimStart().startsWith('{'), false, 'Karing 1.2.25 routes JSON-shaped Clash to the wrong importer');
+  assert.match(mobileText, /^proxy-groups:/m);
+  assert.match(mobileText, /"type":"url-test"/);
   nodes[0].residential = 'unknown';
   assert.equal((await publish()).status, 200);
   const empty = await edge.fetch(request('/subscription/clash', {headers}), env, {});

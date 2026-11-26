@@ -84,6 +84,16 @@ export function karingConfig(nodes, host, uuid) {
   ], rules: ['MATCH,住宅候选']};
 }
 
+export function karingYaml(nodes, host, uuid) {
+  // Karing rejects the JSON-shaped Clash document even though Mihomo accepts it.
+  // Use a YAML block mapping at the root; JSON-quoted flow values are valid YAML
+  // and preserve Unicode, colons and escaping in names and WebSocket paths.
+  const config = karingConfig(nodes, host, uuid);
+  return Object.entries(config).map(([key, values]) =>
+    `${key}:\n${values.map(value => `  - ${JSON.stringify(value)}`).join('\n')}`
+  ).join('\n') + '\n';
+}
+
 export function vlessLinks(proxies) {
   return proxies.map(p => {
     const q = new URLSearchParams({encryption: 'none', security: 'tls', type: 'ws', sni: p.servername,
