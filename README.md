@@ -41,6 +41,7 @@ Pages Source 设置为 GitHub Actions。执行 `VPN Gate Node Check` 可立即�
 
 - `/subscription/clash?token=...`：JSON 格式的完整 Clash/Mihomo 配置（JSON 是 YAML 的子集）。
 - `/subscription/v2ray?token=...`：Base64 编码 VLESS 链接列表。
+- `/subscription/karing?token=...`：Karing 专用住宅候选订阅，使用 `url-test` 自动选择组及稳定的主机名标识。
 - `/status?token=...`：节点数量、更新时间、过期时间。
 - `/health`：不含凭据的服务存活状态。
 
@@ -61,6 +62,8 @@ Pages Source 设置为 GitHub Actions。执行 `VPN Gate Node Check` 可立即�
 节点名称中的国家及 ISP 来自检查时的数据库结果，不同数据库或出口变化会产生差异，不能保证应用实际看到的地区。
 
 部署记录、已测结果与剩余限制见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+
+安卓 TikTok 故障的实际速率与失败率见 [2026-11-26 网络实测](NETWORK-TEST-2026-11-26.md)。Karing 的自动选择不是带宽择优，也不包含电脑守护程序的进程恢复功能。
 
 ## 检查
 

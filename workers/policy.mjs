@@ -70,6 +70,20 @@ export function clashConfig(proxies) {
   };
 }
 
+export function karingConfig(nodes, host, uuid) {
+  const proxies = proxyEntries(nodes, host, uuid);
+  for (let i = 0; i < proxies.length; i++) {
+    const n = nodes[i];
+    proxies[i].name = `${n.exit?.country_code || n.country_code || '??'}-${n.host}:${n.port}-ISP候选`;
+  }
+  const names = proxies.map(p => p.name);
+  return {proxies, 'proxy-groups': [
+    {name: '住宅候选', type: 'select', proxies: ['住宅候选-自动选择', ...names]},
+    {name: '住宅候选-自动选择', type: 'url-test', proxies: names,
+      url: 'https://www.google.com/generate_204', interval: 120, timeout: 15000, tolerance: 200, lazy: false},
+  ], rules: ['MATCH,住宅候选']};
+}
+
 export function vlessLinks(proxies) {
   return proxies.map(p => {
     const q = new URLSearchParams({encryption: 'none', security: 'tls', type: 'ws', sni: p.servername,

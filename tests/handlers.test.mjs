@@ -55,9 +55,15 @@ test('strict subscriptions contain only residential candidates and fail closed w
   assert.equal(cfg.proxies.length, 1);
   assert.equal(cfg['x-gate'].mode, 'residential-candidates');
   assert.equal(cfg['x-gate'].nodes[cfg.proxies[0].name].candidate, true);
+  const mobile = await edge.fetch(request('/subscription/karing', {headers}), env, {});
+  assert.equal(mobile.status, 200);
+  const mobileConfig = await mobile.json();
+  assert.equal(mobileConfig.proxies.length, 1);
+  assert.equal(mobileConfig['proxy-groups'][1].type, 'url-test');
   nodes[0].residential = 'unknown';
   assert.equal((await publish()).status, 200);
   const empty = await edge.fetch(request('/subscription/clash', {headers}), env, {});
   assert.equal(empty.status, 503);
   assert.equal((await empty.json()).error, 'no_residential_candidates');
+  assert.equal((await edge.fetch(request('/subscription/karing', {headers}), env, {})).status, 503);
 });
