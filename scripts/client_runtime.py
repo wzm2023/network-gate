@@ -175,7 +175,7 @@ def probe_exit(expected_ip):
     with direct_session() as http:
         response = http.get('https://www.cloudflare.com/cdn-cgi/trace',
                             proxies={'https': f'http://127.0.0.1:{PORT}'},
-                            headers={'Connection': 'close'}, timeout=(5, 12))
+                            headers={'Connection': 'close'}, timeout=(12, 12))
         response.raise_for_status()
         trace = dict(line.split('=', 1) for line in response.text.splitlines() if '=' in line)
         if trace.get('ip') != expected_ip:
